@@ -1,5 +1,0 @@
-chargerType,formattedTime,hour,hubId,id,maxVehiclePowerKw,startSoc,startTimeSeconds,targetSoc,vehicleCapacityKwh
-AC,13:00:01,13,Berlin_Alt_Tempelhof,2e04ec30-827c-4c1d-8dd6-b06d91632d9e,150,0.775,46801,0.815,107
-AC,13:00:27,13,Berlin_Alt_Tempelhof,b80ad02d-dac8-487b-9a7c-82b45f9a2474,195,0.711,46827,0.728,82.3
-CCS,13:01:39,13,Berlin_Alt_Tempelhof,bffd1951-7c4f-46f8-a13e-20322ac690fc,78,0.784,46899,0.849,46.3
-AC,13:04:06,13,Berlin_Alt_Tempelhof,5bda227f-716b-4a51-95c1-152eacc7716e,230,0.701,47046,0.757,94
