@@ -1,0 +1,15 @@
+name: hub_management
+
+services:
+  ev_request_bot:
+    image: ev-request-bot:latest
+    container_name: ev_request_bot
+    ports:
+      - "8070:8070"
+    restart: unless-stopped
+    networks:
+      - hub_network
+
+networks:
+  hub_network:
+    driver: bridge
