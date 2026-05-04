@@ -165,7 +165,7 @@ public class HubManagementService {
         String chargerId = event.chargerId();
         Charger charger = hubs.get(hubId).get(chargerId);
 
-        synchronized (getLock(chargerId)) {
+        synchronized (getLock(hubId)) {
             log.info("Received ChargingEndedEvent event for charger {}", chargerId);
             charger.setChargingEnergy(0.0);
             charger.setOccupied(false);

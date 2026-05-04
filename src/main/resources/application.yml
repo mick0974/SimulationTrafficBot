@@ -9,8 +9,8 @@ request:
   # Valori: "generation", "upload"
   mode: "generation"
   generation:
-    start-hour: 13
-    end-hour: 23
+    start-hour: 18
+    end-hour: 20
     generated-request-output: "./results/generated_requests.csv"
 
     # Distribuzione gaussiana per SOC post-ricarica

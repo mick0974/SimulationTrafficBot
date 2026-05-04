@@ -1,16 +1,21 @@
 package com.sch.demonstrator.bot.service;
 
 import com.sch.demonstrator.bot.config.BotProperties;
+import com.sch.demonstrator.bot.controller.dto.response.ChargerAssigned;
 import com.sch.demonstrator.bot.event.AssignChargerEvent;
 import com.sch.demonstrator.bot.event.ChargerFreedEvent;
 import com.sch.demonstrator.bot.event.ChargingEndedEvent;
 import com.sch.demonstrator.bot.event.ChargingProgressEvent;
-import com.sch.demonstrator.bot.controller.dto.response.ChargerAssigned;
-import com.sch.demonstrator.bot.model.*;
+import com.sch.demonstrator.bot.model.AdasEVRequest;
+import com.sch.demonstrator.bot.model.BackgroundEVRequest;
+import com.sch.demonstrator.bot.model.Charger;
+import com.sch.demonstrator.bot.model.EVRequest;
+import com.sch.demonstrator.bot.service.exception.AdasRequestNotAssignedException;
 import com.sch.demonstrator.bot.service.processing.ChargingModelService;
 import com.sch.demonstrator.bot.service.processing.HubManagementService;
-import com.sch.demonstrator.bot.service.exception.AdasRequestNotAssignedException;
+import com.sch.demonstrator.bot.service.processing.QueueManager;
 import com.sch.demonstrator.bot.service.startup.EVRequestInitializer;
+import com.sch.demonstrator.bot.service.tracking.RequestTracker;
 import com.sch.demonstrator.bot.util.Utils;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
@@ -23,66 +28,76 @@ import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.stereotype.Component;
 
-import java.io.BufferedWriter;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.util.*;
+import java.util.List;
+import java.util.Map;
+import java.util.Queue;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.function.Consumer;
 
 @Component
 @Slf4j
 @Profile("prod")
 public class ChargingManager {
 
-    private final EVRequestInitializer evEVRequestInitializer;
+    private final EVRequestInitializer evRequestInitializer;
     private final HubManagementService hubManagementService;
     private final ChargingModelService chargingModelService;
-
+    private final QueueManager queueManager;
+    private final RequestTracker tracker;
     private final TaskScheduler taskScheduler;
     private final ApplicationEventPublisher eventPublisher;
+    private final BotProperties props;
 
     private final Queue<BackgroundEVRequest> evRequests = new ConcurrentLinkedQueue<>();
-    private final Map<String, Deque<EVRequest>> pendingRequests = new ConcurrentHashMap<>();
     private final Map<UUID, Charger> adasAssignedChargers = new ConcurrentHashMap<>();
-    private final Map<UUID, TrackedEVRequest> completedRequests = new ConcurrentHashMap<>();
 
-    private final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+    private final DateTimeFormatter formatter = DateTimeFormatter
+            .ofPattern("yyyy-MM-dd HH:mm:ss")
             .withZone(ZoneId.systemDefault());
 
     private volatile Instant startTime;
     private long botTimeShift;
 
-    private final BotProperties props;
+    public ChargingManager(
+            EVRequestInitializer evRequestInitializer,
+            HubManagementService hubManagementService,
+            ChargingModelService chargingModelService,
+            QueueManager queueManager,
+            RequestTracker tracker,
+            @Qualifier("taskScheduler") TaskScheduler taskScheduler,
+            ApplicationEventPublisher eventPublisher,
+            BotProperties props) {
 
-    public ChargingManager(EVRequestInitializer evEVRequestInitializer, HubManagementService hubManagementService, @Qualifier("taskScheduler") TaskScheduler taskScheduler, ApplicationEventPublisher eventPublisher, ChargingModelService chargingModelService, BotProperties props) {
-        this.evEVRequestInitializer = evEVRequestInitializer;
+        this.evRequestInitializer = evRequestInitializer;
         this.hubManagementService = hubManagementService;
+        this.chargingModelService = chargingModelService;
+        this.queueManager = queueManager;
+        this.tracker = tracker;
         this.taskScheduler = taskScheduler;
         this.eventPublisher = eventPublisher;
-        this.chargingModelService = chargingModelService;
         this.props = props;
     }
 
     @PostConstruct
     private void init() {
         String[] hubIds = hubManagementService.getHubIds();
-        evRequests.addAll(evEVRequestInitializer.generateRequests(hubIds));
-        startTime = props.getStartTime();
-        botTimeShift = props.getBotTimeShift();
+        evRequests.addAll(evRequestInitializer.generateRequests(hubIds));
+        startTime = props.getStartTimeReal();
+        botTimeShift = props.getStartTimeInternal();
     }
 
     // ----------------------------- ADAS REQUESTS HANDLING ----------------------------------------
     public void processAdasRequest(AdasEVRequest request) {
-        startTrackingRequestProgression("Adas", request.getId(), Instant.now().getEpochSecond() - startTime.getEpochSecond(), -1.0, request.getHubId());
-        processEVRequest(request, charger -> updateAdasRequestMap(request.getId(), charger));
+        tracker.start(
+                "Adas", request.getId(),
+                Instant.now().getEpochSecond() - startTime.getEpochSecond(),
+                request.getStartSoc(), request.getHubId(), RequestTracker.TrackingType.REAL);
+
+        processEVRequest(request);
     }
 
     public ChargerAssigned getAdasAssignedCharger(UUID requestId) {
@@ -90,6 +105,8 @@ public class ChargingManager {
 
         if (charger == null)
             throw new AdasRequestNotAssignedException("No connector has yet been assigned to request " + requestId);
+
+        tracker.startCharging(requestId, Instant.now().getEpochSecond());
 
         return new ChargerAssigned(
                 charger.getChargerId(),
@@ -102,7 +119,6 @@ public class ChargingManager {
         if (charger == null)
             throw new AdasRequestNotAssignedException("No charger found for request " + requestId);
 
-        addStartChargingTimeToTrackedRequest(requestId, Instant.now().getEpochSecond());
         hubManagementService.updatePowerOutputForCharger(
                 new ChargingProgressEvent(
                         charger.getHubId(),
@@ -116,8 +132,8 @@ public class ChargingManager {
         if (charger == null)
             throw new AdasRequestNotAssignedException("No charger found for request " + requestId);
 
-        addEndChargingTimeToTrackedRequest(requestId, Instant.now().getEpochSecond());
-        logTrackedRequest(requestId);
+        tracker.endCharging(requestId, Instant.now().getEpochSecond());
+        tracker.endTracking(requestId);
         hubManagementService.freeCharger(new ChargingEndedEvent(charger.getHubId(), charger.getChargerId()));
     }
 
@@ -136,102 +152,75 @@ public class ChargingManager {
     @EventListener(AssignChargerEvent.class)
     protected void chargeBackgroundVehicle(AssignChargerEvent event) {
         BackgroundEVRequest request = event.requestToSatisfy();
-        startTrackingRequestProgression("Background", request.getId(), request.getStartTimeSeconds(), request.getStartSoc(), request.getHubId());
-        processEVRequest(request, charger -> scheduleChargingProcess(request, charger));
+        tracker.start("Background", request.getId(), request.getStartTimeSeconds(), request.getStartSoc(), request.getHubId(), RequestTracker.TrackingType.REAL);
+        processEVRequest(request);
     }
 
     @EventListener(ChargerFreedEvent.class)
     protected void retryRequests(ChargerFreedEvent event) {
         log.info("A charger in hub {} has been freed, checking for pending requests...", event);
         String hubFreed = event.hubId();
-        if (hubHasPendingRequests(hubFreed)) {
-            dryRetryQueue(pendingRequests.get(hubFreed));
-        } else {
-            log.info("No requests pending for freed hub {}", hubFreed);
-        }
+        tryDryingHubQueue(hubFreed);
     }
 
     private void scheduleRequest(BackgroundEVRequest request) {
         log.info("[{}] Scheduling request", request.getId());
         Instant now = startTime;
         Instant triggerAt = now.plusSeconds(request.getStartTimeSeconds()).minusSeconds(botTimeShift);
-        taskScheduler.schedule( () -> eventPublisher.publishEvent(new AssignChargerEvent(request)), triggerAt);
+        taskScheduler.schedule(() -> eventPublisher.publishEvent(new AssignChargerEvent(request)), triggerAt);
         log.info("Request scheduled");
     }
 
     // -----------------------------------------------------------------
 
-    private void processEVRequest(EVRequest request, Consumer<Charger> handleAssignedRequest) {
-        String prefix = request instanceof AdasEVRequest ? "Adas" : "Background";
-        UUID requestId = request instanceof AdasEVRequest ? ((AdasEVRequest) request).getId() : ((BackgroundEVRequest) request).getId();
-        log.info("[{} - {}] Received request from vehicle", prefix, requestId);
+    private void processEVRequest(EVRequest request) {
+        String logId = request.getLogId();
+        UUID requestId = request.getId();
+        String hubId = request.getHubId();
+        log.info("[{}] Received request from vehicle", logId);
 
-        log.debug("[{} - {}] Checking if hub {} has pending requests", prefix, requestId, request.getHubId());
-        if (hubHasPendingRequests(request.getHubId())) {
-            log.debug("[{} - {}] Hub {} has {} pending requests",
-                    prefix, requestId, request.getHubId(), pendingRequests.size());
-            dryRetryQueue(pendingRequests.get(request.getHubId()));
-        }
+        queueManager.dryQueue(hubId, this::onChargerAssigned);
 
-        log.info("[{} - {}] Start processing request, charger allocation in progress", prefix, requestId);
+        log.info("[{}] Start processing request, charger allocation in progress", logId);
         Charger charger = allocateChargerToRequest(
                 request.getHubId(),
                 request.getChargerType(),
                 request.getMaxVehiclePowerKw());
 
-        if (charger == null) {
-            log.info("[{} - {}] No free charger found, adding request to retry-queue", prefix, requestId);
-            pendingRequests
-                    .computeIfAbsent(request.getHubId(), k -> new ConcurrentLinkedDeque<>())
-                    .offer(request);
+        // Aggiorno se la richiesta ha incontrato coda
+        tracker.foundQueue(requestId, charger != null);
+
+        if (charger != null) {
+            log.info("[{}] Request assigned to charger {}", logId, charger);
+            onChargerAssigned(request, charger);
+            return;
+        }
+
+        log.info("[{}] No charger available, evaluating queue entry", logId);
+
+        if (request instanceof BackgroundEVRequest bgRequest) {
+            boolean enteredQueue = queueManager.tryEnqueueing(bgRequest);
+            if (!enteredQueue) {
+                tracker.endTracking(requestId);  // La richiesta di background non si accoda
+            }
         } else {
-            log.info("[{} - {}] Request assigned to charger {}", prefix, requestId, charger);
-            addChargerToTrackedRequest(requestId, charger.getChargerId(), charger.getType());
-            handleAssignedRequest.accept(charger);
+            queueManager.enqueueForced(request); // La richiesta Adas si accoda sempre
+        }
+
+    }
+
+    private void onChargerAssigned(EVRequest request, Charger charger) {
+        tracker.setCharger(request.getId(), charger.getChargerId(), charger.getType());
+
+        if (request instanceof BackgroundEVRequest bgRequest) {
+            scheduleChargingProcess(bgRequest, charger);
+        } else {
+            adasAssignedChargers.put(request.getId(), charger);
         }
     }
 
-    private boolean hubHasPendingRequests(String hubId) {
-        Deque<EVRequest> hubRequestInQueue = pendingRequests.get(hubId);
-        return hubRequestInQueue != null && !hubRequestInQueue.isEmpty();
-    }
-
-    private synchronized void dryRetryQueue(Deque<EVRequest> hubRequestInQueue) {
-        log.info("Requests in queue: {}, start drying: {}", hubRequestInQueue.size(), hubRequestInQueue);
-        EVRequest request;
-
-        while ((request = hubRequestInQueue.pollFirst()) != null) {
-            UUID requestId = request instanceof BackgroundEVRequest
-                    ? ((BackgroundEVRequest) request).getId()
-                    : ((AdasEVRequest) request).getId();
-
-            String id = request instanceof BackgroundEVRequest
-                    ? ((BackgroundEVRequest) request).getId().toString()
-                    : "Adas - %s".formatted(((AdasEVRequest) request).getId());
-
-            log.debug("[{}] Trying to assigning charger to pending request {}", id, request);
-            Charger charger = allocateChargerToRequest(
-                    request.getHubId(),
-                    request.getChargerType(),
-                    request.getMaxVehiclePowerKw());
-
-            if (charger == null) {
-                log.debug("[{}] No charger found for pending request, stop drying queue", id);
-                hubRequestInQueue.offerFirst(request); // reinserisco la richiesta in testa alla
-                log.info("Remaining request in queue: {}", hubRequestInQueue.size());
-                return;
-            }
-
-            log.debug("[{}] Charger {} assigned to request", id, charger);
-            addChargerToTrackedRequest(requestId, charger.getChargerId(), charger.getType());
-            if (request instanceof BackgroundEVRequest) {
-                scheduleChargingProcess((BackgroundEVRequest) request, charger);
-            } else {
-                updateAdasRequestMap(((AdasEVRequest) request).getId(), charger);
-            }
-        }
-
-        log.info("Remaining request in queue: {}", hubRequestInQueue.size());
+    private void tryDryingHubQueue(String hubId) {
+        queueManager.dryQueue(hubId, this::onChargerAssigned);
     }
 
     private Charger allocateChargerToRequest(String hubId, String chargerType, double maxVehiclePowerKw) {
@@ -271,105 +260,19 @@ public class ChargingManager {
         }
 
         // Aggiorno il tracking della richiesta
-        addStartChargingTimeToTrackedRequest(request.getId(), chargingTable.getFirst().getKey().getEpochSecond());
-        addEndChargingTimeToTrackedRequest(request.getId(), chargingTable.getLast().getKey().getEpochSecond());
-        logTrackedRequest(request.getId());
+        tracker.startCharging(request.getId(), chargingTable.getFirst().getKey().getEpochSecond());
+        tracker.endCharging(request.getId(), chargingTable.getLast().getKey().getEpochSecond());
+        tracker.endTracking(request.getId());
 
-        // Ritarda la liberazione del connettore di 1 secondi dopo l'ultima erogazione
+        // Ritarda la liberazione del connettore di 5 secondi dopo l'ultima erogazione
         taskScheduler.schedule(() ->
-                eventPublisher.publishEvent(new ChargingEndedEvent(
-                        allocatedCharger.getHubId(), allocatedCharger.getChargerId())),
+                        eventPublisher.publishEvent(new ChargingEndedEvent(
+                                allocatedCharger.getHubId(), allocatedCharger.getChargerId())),
                 chargingTable.getLast().getKey().plusSeconds(1));
         log.debug("[{}] Scheduling ChargingEndedEvent event for hub {} at {}",
                 request.getId(),
-                allocatedCharger.getHubId(), formatter.format(chargingTable.getLast().getKey().plusSeconds(1)));
+                allocatedCharger.getHubId(), formatter.format(chargingTable.getLast().getKey().plusSeconds(5)));
 
         log.info("[{}] Charging events scheduled successfully", request.getId());
-    }
-
-    private void updateAdasRequestMap(UUID requestId, Charger charger) {
-        adasAssignedChargers.put(requestId, charger);
-    }
-
-    // -----------------------------------------------------------------
-
-    private void startTrackingRequestProgression(String requestType, UUID requestId, long startTime, double initialSoc, String hubId) {
-        completedRequests.computeIfAbsent(requestId, k -> new TrackedEVRequest(requestType, requestId, startTime, initialSoc, hubId));
-    }
-
-    private void addChargerToTrackedRequest(UUID requestId, String chargerId, String plugType) {
-        completedRequests.computeIfPresent(requestId, (key, trackedRequest) -> {
-            trackedRequest.setChargerData(chargerId, plugType);
-            return trackedRequest;
-        });
-    }
-
-    private void addStartChargingTimeToTrackedRequest(UUID requestId, long startCharging) {
-        completedRequests.computeIfPresent(requestId, (key, trackedRequest) -> {
-            trackedRequest.setStartChargingAndWaitTime(startCharging);
-            return trackedRequest;
-        });
-    }
-
-    private void addEndChargingTimeToTrackedRequest(UUID requestId, long endCharging) {
-        completedRequests.computeIfPresent(requestId, (key, trackedRequest) -> {
-            trackedRequest.setChargeEndAndDuration(endCharging);
-            return trackedRequest;
-        });
-    }
-
-    private void logTrackedRequest(UUID requestId) {
-        TrackedEVRequest request = completedRequests.remove(requestId);
-        if (request == null)
-            return;
-
-        writeToCsv(request);
-    }
-
-    private synchronized void writeToCsv(TrackedEVRequest r) {
-        try {
-            Path path = Paths.get(props.getExecutionOutput());
-            Files.createDirectories(path.getParent());
-
-            boolean fileExists = Files.exists(path);
-
-            try (BufferedWriter w = Files.newBufferedWriter(
-                    path,
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.APPEND)) {
-
-                if (!fileExists) {
-                    w.write("request_type,request_id,arrival_time,start_charging,wait_time,charge_duration,end_charging,soc_arrival,hub_id,charger_id,plug_type,arrivalTimeFormatted,startChargingFormatted,endChargingFormatted");
-                    w.newLine();
-                }
-
-                w.write(String.join(",",
-                        r.getSocArrival() == -1 ? "Adas" : "Background",
-                        String.valueOf(r.getRequestId()),
-                        String.valueOf(r.getArrivalTimeInternal()),
-                        String.valueOf(r.getStartChargingInternal()),
-                        String.valueOf(r.getWaitTime()),
-                        String.valueOf(r.getChargeDuration()),
-                        String.valueOf(r.getEndChargingInternal()),
-                        String.valueOf(r.getSocArrival()),
-                        safe(r.getHubId()),
-                        safe(r.getChargerId()),
-                        safe(r.getPlugType()),
-                        safe(r.getArrivalTimeFormatted()),
-                        safe(r.getStartChargingFormatted()),
-                        safe(r.getEndChargingFormatted())
-                ));
-
-                w.newLine();
-
-            }
-
-        } catch (Exception e) {
-            log.error("CSV error", e);
-        }
-    }
-
-    private String safe(String s) {
-        return s == null ? "" : s;
     }
 }

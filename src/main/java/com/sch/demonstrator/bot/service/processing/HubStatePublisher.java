@@ -1,13 +1,13 @@
 package com.sch.demonstrator.bot.service.processing;
 
 import com.sch.demonstrator.bot.config.BotProperties;
+import com.sch.demonstrator.bot.model.Charger;
+import com.sch.demonstrator.bot.util.Utils;
 import com.sch.demonstrator.bot.websocket.SimulationWebSocketPublisher;
 import com.sch.demonstrator.bot.websocket.dto.WebSocketUpdate;
 import com.sch.demonstrator.bot.websocket.dto.payload.ChargerStatus;
 import com.sch.demonstrator.bot.websocket.dto.payload.HubStatusPayload;
 import com.sch.demonstrator.bot.websocket.dto.payload.TimeStepPayload;
-import com.sch.demonstrator.bot.model.Charger;
-import com.sch.demonstrator.bot.util.Utils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -28,7 +28,7 @@ public class HubStatePublisher {
 
     @Scheduled(fixedRateString = "${request.websocket.publish-interval-seconds:45}000")
     public void publishChargerStatuses() {
-        long snapshotTime =  (Instant.now().getEpochSecond() + botProperties.getBotTimeShift()) - botProperties.getStartTime().getEpochSecond();
+        long snapshotTime =  (Instant.now().getEpochSecond() + botProperties.getStartTimeInternal()) - botProperties.getStartTimeReal().getEpochSecond();
         Map<String, Map<String, Charger>> hubs = hubManagementService.getCurrentHubStates();
 
         List<HubStatusPayload> payloads = new ArrayList<>();

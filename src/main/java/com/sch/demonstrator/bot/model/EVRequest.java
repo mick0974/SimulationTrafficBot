@@ -16,8 +16,17 @@ import java.util.UUID;
 @AllArgsConstructor
 @SuperBuilder
 @ToString
-public class EVRequest {
-    private double maxVehiclePowerKw;
+public abstract class EVRequest {
+    private UUID id;
+    private double startSoc;
+    private long startTimeSeconds;
     private String chargerType;
     private String hubId;
+    private double maxVehiclePowerKw;
+
+    public abstract String getRequestType();
+
+    public String getLogId() {
+        return "%s - %s".formatted(getRequestType(), id);
+    }
 }

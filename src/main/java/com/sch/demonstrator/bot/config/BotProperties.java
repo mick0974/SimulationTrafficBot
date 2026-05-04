@@ -25,8 +25,8 @@ public class BotProperties {
 
     private Websocket websocket;
 
-    private volatile Instant startTime;
-    private long botTimeShift;
+    private volatile Instant startTimeReal;
+    private long startTimeInternal;
 
 
     @Data
@@ -65,8 +65,8 @@ public class BotProperties {
 
     @PostConstruct
     private void init() {
-        startTime = Instant.now();
-        botTimeShift = generation.getStartHour() * 3600;
+        startTimeReal = Instant.now();
+        startTimeInternal = generation.getStartHour() * 3600;
 
         log.info("Bot properties initialized: {}", this);
     }

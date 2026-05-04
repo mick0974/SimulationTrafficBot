@@ -7,8 +7,6 @@ import lombok.ToString;
 import lombok.experimental.SuperBuilder;
 import lombok.extern.slf4j.Slf4j;
 
-import java.util.UUID;
-
 @Getter
 @Slf4j
 @NoArgsConstructor
@@ -16,13 +14,15 @@ import java.util.UUID;
 @SuperBuilder
 @ToString
 public class BackgroundEVRequest extends EVRequest {
-    private UUID id;
     private double vehicleCapacityKwh;
-    private double startSoc;
     private double targetSoc;
-    private long startTimeSeconds;
 
     // Debug
     private int hour;
     private String formattedTime;
+
+    @Override
+    public String getRequestType() {
+        return "Background";
+    }
 }
