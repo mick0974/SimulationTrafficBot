@@ -15,4 +15,8 @@ public class QueueBehaviorParam {
     private double queueFrustration;
     @JsonProperty("wait_tolerance_lambda")
     private double waitToleranceLambda;
+    @JsonProperty("impatience_coefficient")
+    private double impatienceCoefficient;
+    @JsonProperty("charge_tolerance_curvature")
+    private double chargeToleranceCurvature;
 }

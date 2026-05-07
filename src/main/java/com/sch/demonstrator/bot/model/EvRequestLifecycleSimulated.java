@@ -2,20 +2,17 @@ package com.sch.demonstrator.bot.model;
 
 import com.sch.demonstrator.bot.util.Utils;
 import lombok.Getter;
-import lombok.ToString;
 
 import java.util.UUID;
 
 @Getter
 public class EvRequestLifecycleSimulated extends EvRequestLifecycle {
 
-    public EvRequestLifecycleSimulated(String requestType,
-                                       UUID requestId,
-                                       long arrivalTimeInternal,
-                                       double socArrival,
-                                       String hubId) {
+    private Boolean endedChargingEarlier;
+    public EvRequestLifecycleSimulated(String requestType, UUID requestId, long arrivalTimeInternal,
+                                       double socArrival, String hubId, String requestedChargerType) {
 
-        super(requestType, requestId, arrivalTimeInternal, socArrival, hubId);
+        super(requestType, requestId, arrivalTimeInternal, socArrival, hubId, requestedChargerType);
     }
 
     @Override
@@ -36,9 +33,12 @@ public class EvRequestLifecycleSimulated extends EvRequestLifecycle {
     }
 
     @Override
-    public void setChargerData(String chargerId, String plugType) {
+    public void setChargerData(String chargerId, String assignedChargerType) {
         super.setChargerId(chargerId);
-        super.setPlugType(plugType);
+        super.setAssignedChargerType(assignedChargerType);
+        endedChargingEarlier =
+                !getRequestedChargerType().equals("AC")
+                && assignedChargerType.equals("AC");
     }
 
     @Override
@@ -47,19 +47,18 @@ public class EvRequestLifecycleSimulated extends EvRequestLifecycle {
 
         super.setWaitTimeBeforeCharging(waitTime);
         super.setStartChargingInternal(startChargingAt);
-        super.setStartChargingFormatted(
-                Utils.formatTime(startChargingAt)
-        );
+        super.setStartChargingFormatted(Utils.formatTime(startChargingAt));
+        super.setWaitTimeHourFormatted(Utils.formatTime(waitTime));
     }
 
     @Override
     public void setChargeEndAndDuration(long endChargingAt) {
         long duration = endChargingAt - super.getStartChargingInternal();
+
         super.setChargeDuration(duration);
         super.setEndChargingInternal(endChargingAt);
-        super.setEndChargingFormatted(
-                Utils.formatTime(endChargingAt)
-        );
+        super.setEndChargingFormatted(Utils.formatTime(endChargingAt));
+        super.setChargeDurationHourFormatted(Utils.formatTime(duration));
     }
 
     @Override

@@ -9,6 +9,7 @@ import com.sch.demonstrator.bot.service.exception.ChargerNotFoundException;
 import com.sch.demonstrator.bot.service.exception.ChargerOperationInvalidException;
 import com.sch.demonstrator.bot.service.startup.HubLoaderService;
 import jakarta.annotation.PostConstruct;
+import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
@@ -30,17 +31,35 @@ public class HubManagementService {
 
     private final Map<String, Map<String, Charger>> hubs = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Object> hubLocks = new ConcurrentHashMap<>();
+    @Getter
+    private final Map<String, Map<String, Double>> hubStats = new HashMap<>();
 
     @PostConstruct
     public void init() {
         hubs.putAll(hubLoaderService.initHubs());
+
+        for (Map.Entry<String, Map<String, Charger>> hub : hubs.entrySet()) {
+            Map<String, Double> hubStat = new HashMap<>();
+            for (Charger charger : hub.getValue().values()) {
+                hubStat.putIfAbsent(charger.getType(), charger.getInfrastructurePowerKw());
+            }
+
+            hubStats.put(hub.getKey(), hubStat);
+        }
+
+        hubStats.forEach((hubId, stats) -> {
+            System.out.println("Hub: " + hubId);
+
+            stats.forEach((key, value) ->
+                    System.out.println("  " + key + " = " + value)
+            );
+        });
     }
 
     /**
-     * Seleziona e assegna un connettore disponibile all'interno dell'hub specificato.
-     *
+     * Seleziona e assegna un connettore disponibile all'interno dell'hub specificato per una richiesta di tipo Background.
+     * Una richiesta di tipo Background può essere assegnata ad un qualsiasi tipo di connettore, se necessario.
      * La selezione avviene secondo la seguente strategia:
-     *
      * <ol>
      *     <li>
      *         Tra i connettori disponibili viene selezionato quello che:
@@ -70,7 +89,7 @@ public class HubManagementService {
      * @param maxVehiclePowerKw potenza massima supportata dal veicolo
      * @return il {@link Charger} assegnato oppure {@code null} se non ci sono connettori disponibili
      */
-    public Charger assignCharger(String hubTarget, String chargerType, double maxVehiclePowerKw) {
+    public Charger assignChargerBackground(String hubTarget, String chargerType, double maxVehiclePowerKw) {
         synchronized (getLock(hubTarget)) {
             Set<Charger> availableChargers = filterAvailableChargers(hubTarget);
 
@@ -78,7 +97,7 @@ public class HubManagementService {
 
             Charger bestMatch = null; // connettore del tipo chargerType e con potenza minore tra i connettore disponibili con potenza >= a maxVehiclePowerKw
             Charger leastAbovePower = null; // connettore con potenza minore tra i connettore disponibili con potenza >= a maxVehiclePowerKw
-            Charger maxAvailablePower = null; // connettore con potenza erogabile maggiore tra i disponibili
+            Charger maxAvailablePower = null; // connettore con potenza erogabile maggiore tra i rimanenti
 
             for (Charger c : availableChargers) {
                 double power = c.getInfrastructurePowerKw();
@@ -110,6 +129,72 @@ public class HubManagementService {
             Charger selected = bestMatch != null
                     ? bestMatch
                     : (leastAbovePower != null ? leastAbovePower : maxAvailablePower);
+
+            if (selected == null) return null;
+
+            selected.setOccupied(true);
+            return selected;
+        }
+    }
+
+    /**
+     * Seleziona e assegna un connettore disponibile all'interno dell'hub specificato per una richiesta di tipo Adas.
+     * Una richiesta di tipo Adas può essere assegnata solo ad un connettore del tipo richiesto.
+     * La selezione avviene secondo la seguente strategia:
+     * <ol>
+     *     <li>
+     *         Tra i connettori disponibili viene selezionato quello che:
+     *         <ul>
+     *             <li>ha tipo uguale a {@code chargerType}</li>
+     *             <li>ha potenza {@code >= maxVehiclePowerKw}</li>
+     *         </ul>
+     *         Tra questi viene scelto quello con la potenza minima (più vicina alla richiesta).
+     *     </li>
+     *
+     *     <li>
+     *         Se nessun connettore soddisfa entrambi i vincoli,
+     *         viene selezionato un connettore disponibile con potenza maggiore tra quelli del tipo richiesto.
+     *     </li>
+     * </ol>
+     *
+     * Una volta selezionato, il connettore viene marcato come occupato.
+     *
+     * @param hubTarget identificativo dell'hub su cui effettuare la ricerca
+     * @param chargerType tipo di connettore richiesto
+     * @param maxVehiclePowerKw potenza massima supportata dal veicolo
+     * @return il {@link Charger} assegnato oppure {@code null} se non ci sono connettori disponibili
+     */
+    public Charger assignChargerAdas(String hubTarget, String chargerType, double maxVehiclePowerKw) {
+        synchronized (getLock(hubTarget)) {
+            Set<Charger> availableChargers = filterAvailableChargers(hubTarget);
+
+            if (availableChargers.isEmpty()) return null;
+
+            Charger bestMatch = null; // connettore del tipo chargerType e con potenza minore tra i connettore disponibili con potenza >= a maxVehiclePowerKw
+            Charger maxAvailablePower = null; // connettore con potenza erogabile maggiore tra i connettori del tipo scelto.
+
+            for (Charger c : availableChargers) {
+                double power = c.getInfrastructurePowerKw();
+
+                // Aggiorno se è presente un connettore libero con potenza erogabile maggiore
+                if (maxAvailablePower == null ||
+                        power > maxAvailablePower.getInfrastructurePowerKw()) {
+                    maxAvailablePower = c;
+                }
+
+                // Aggiorno se il connettore eroga potenza >= a quella ricevibile dal veicolo ed eroga una potenza minore a quello salvato
+                // (non spreco connettori con potenza superiore che possono essere dati a veicoli con maxVehiclePowerKw superiore)
+                if (power >= maxVehiclePowerKw && c.getType().equals(chargerType)) {
+                    if (bestMatch == null ||
+                            power < bestMatch.getInfrastructurePowerKw()) {
+                        bestMatch = c;
+                    }
+                }
+            }
+
+            Charger selected = bestMatch != null
+                    ? bestMatch
+                    : maxAvailablePower;
 
             if (selected == null) return null;
 
@@ -177,10 +262,6 @@ public class HubManagementService {
 
     public Map<String, Map<String, Charger>> getCurrentHubStates() {
         return Collections.unmodifiableMap(hubs);
-    }
-
-    public String[] getHubIds() {
-        return hubs.keySet().toArray(new String[0]);
     }
 
     /**

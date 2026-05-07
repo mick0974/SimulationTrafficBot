@@ -21,7 +21,7 @@ import java.util.function.BiConsumer;
 @Slf4j
 public class QueueManager {
 
-    private final QueueBehaviorService queueBehaviorService;
+    private final DriverBehaviorService driverBehaviorService;
     private final HubManagementService hubManagementService;
     private final RequestTracker tracker;
     private final TaskScheduler taskScheduler;
@@ -30,12 +30,12 @@ public class QueueManager {
     private final ConcurrentHashMap<String, Object> queueLocks = new ConcurrentHashMap<>();
 
     public QueueManager(
-            QueueBehaviorService queueBehaviorService,
+            DriverBehaviorService driverBehaviorService,
             HubManagementService hubManagementService,
             RequestTracker tracker,
             @Qualifier("taskScheduler") TaskScheduler taskScheduler
     ) {
-        this.queueBehaviorService = queueBehaviorService;
+        this.driverBehaviorService = driverBehaviorService;
         this.hubManagementService = hubManagementService;
         this.tracker = tracker;
         this.taskScheduler = taskScheduler;
@@ -50,18 +50,18 @@ public class QueueManager {
      */
     public boolean tryEnqueueing(BackgroundEVRequest request) {
         double startSoc = request.getStartSoc();
-        long arrivalTimeInternal = tracker.getArrivalTimeInternal(request.getId());
+        long arrivalTimeInternal = tracker.getArrivalTimeInternal(request.getRequestId());
         int currentSize = getHubQueueSize(request.getHubId());
 
-        boolean entersQueue = queueBehaviorService.joinQueue(currentSize, startSoc, arrivalTimeInternal);
+        boolean entersQueue = driverBehaviorService.joinQueue(currentSize, startSoc, arrivalTimeInternal);
         long maxWaitSec  = 0;
 
         if (entersQueue) {
-            maxWaitSec = queueBehaviorService.getMaxQueueingTime(startSoc, arrivalTimeInternal);
+            maxWaitSec = driverBehaviorService.getMaxQueueingTime(startSoc, arrivalTimeInternal);
             scheduleQueueAbandonment(request, maxWaitSec);
         }
 
-        tracker.setQueueDecision(request.getId(), entersQueue, maxWaitSec);
+        tracker.setQueueDecision(request.getRequestId(), entersQueue, maxWaitSec);
         log.info("[{}] Queue decision: enters={} maxWait={}s queueSize={}",
                 request.getLogId(), entersQueue, maxWaitSec, currentSize);
 
@@ -72,7 +72,7 @@ public class QueueManager {
                 .computeIfAbsent(request.getHubId(), k -> new ConcurrentLinkedDeque<>())
                 .offer(request);
 
-        log.info("[{}] Enqueued at hub {} (size with new request = {})", request.getId(), request.getHubId(), currentSize + 1);
+        log.info("[{}] Enqueued at hub {} (size with new request = {})", request.getRequestId(), request.getHubId(), currentSize + 1);
         return true;
     }
 
@@ -98,7 +98,7 @@ public class QueueManager {
             EVRequest request;
 
             while ((request = hubRequestInQueue.pollFirst()) != null) {
-                UUID requestId = request.getId();
+                UUID requestId = request.getRequestId();
                 String logId = request.getLogId();
 
                 log.debug("[{}] Trying to assigning charger to pending request {}", logId, request);
@@ -130,7 +130,7 @@ public class QueueManager {
         taskScheduler.schedule(
                 () -> removeFromQueue(request),
                 abandonAt);
-        log.debug("[{}] Abandonment scheduled at {}", request.getId(), abandonAt);
+        log.debug("[{}] Abandonment scheduled at {}", request.getRequestId(), abandonAt);
     }
 
     private boolean hasPendingRequests(String hubId) {
@@ -142,8 +142,8 @@ public class QueueManager {
         synchronized (getLock(request.getHubId())) {
             log.info("[{}] Removing request from queue, max wait time reached", request.getLogId());
             if (pendingRequests.get(request.getHubId()).remove(request)) {
-                tracker.markAbandoned(request.getId(), Instant.now().getEpochSecond());
-                tracker.endTracking(request.getId());
+                tracker.markAbandoned(request.getRequestId(), Instant.now().getEpochSecond());
+                tracker.endTracking(request.getRequestId());
             } else {
                 log.info("[{}] Request no more in queue", request.getLogId());
             }
@@ -156,7 +156,7 @@ public class QueueManager {
     }
 
     private Charger allocateChargerToRequest(String hubId, String chargerType, double maxVehiclePowerKw) {
-        return hubManagementService.assignCharger(hubId, chargerType, maxVehiclePowerKw);
+        return hubManagementService.assignChargerBackground(hubId, chargerType, maxVehiclePowerKw);
     }
 
     private Object getLock(String hubId) {

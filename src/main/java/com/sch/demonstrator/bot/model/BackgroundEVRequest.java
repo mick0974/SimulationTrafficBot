@@ -16,6 +16,7 @@ import lombok.extern.slf4j.Slf4j;
 public class BackgroundEVRequest extends EVRequest {
     private double vehicleCapacityKwh;
     private double targetSoc;
+    private double expectedChargerPower;
 
     // Debug
     private int hour;

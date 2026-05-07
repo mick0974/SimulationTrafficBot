@@ -72,7 +72,7 @@ public class Controller {
         long currentInternalTime = props.getStartTimeInternal() +
                 Instant.now().getEpochSecond() - props.getStartTimeReal().getEpochSecond();
         AdasEVRequest request = AdasEVRequest.builder()
-                .id(uuid)
+                .requestId(uuid)
                 .hubId(hubId)
                 .chargerType(dto.chargerType())
                 .maxVehiclePowerKw(dto.maxVehiclePowerKw())

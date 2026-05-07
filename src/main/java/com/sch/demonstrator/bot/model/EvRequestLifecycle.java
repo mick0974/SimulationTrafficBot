@@ -3,7 +3,6 @@ package com.sch.demonstrator.bot.model;
 import com.sch.demonstrator.bot.util.Utils;
 import lombok.Getter;
 import lombok.Setter;
-import lombok.ToString;
 
 import java.util.UUID;
 
@@ -15,6 +14,7 @@ public abstract class EvRequestLifecycle {
     private Long arrivalTimeInternal;
     private Double socArrival;
     private String hubId;
+    private String requestedChargerType;
 
     private Boolean foundQueue;
     private Boolean enteredQueue;
@@ -22,7 +22,7 @@ public abstract class EvRequestLifecycle {
     private Long maxQueueTimeAccepted;
 
     private String chargerId;
-    private String plugType;
+    private String assignedChargerType;
 
     private Long startChargingInternal;
     private Long waitTimeBeforeCharging;
@@ -33,20 +33,23 @@ public abstract class EvRequestLifecycle {
     private String arrivalTimeFormatted;
     private String startChargingFormatted;
     private String endChargingFormatted;
+    private String waitTimeHourFormatted;
+    private String chargeDurationHourFormatted;
 
-    public EvRequestLifecycle(String requestType, UUID requestId, long arrivalTimeInternal, double socArrival, String hubId) {
+    public EvRequestLifecycle(String requestType, UUID requestId, long arrivalTimeInternal, double socArrival, String hubId, String requestedChargerType) {
         this.requestType = requestType;
         this.requestId = requestId;
         this.arrivalTimeInternal = arrivalTimeInternal;
         this.socArrival = socArrival;
         this.hubId = hubId;
+        this.requestedChargerType = requestedChargerType;
         this.arrivalTimeFormatted = Utils.formatTime(arrivalTimeInternal);
     }
 
     public abstract void foundQueue(boolean foundQueue);
     public abstract void setEntersQueueAndMaxWaitTime(boolean entersQueue, long maxWaitTime);
     public abstract void vehicleAbandonedQueue(long abandonedQueueAt);
-    public abstract void setChargerData(String chargerId, String plugType);
+    public abstract void setChargerData(String chargerId, String assignedChargerType);
     public abstract void setStartChargingAndWaitTime(long startChargingAt);
     public abstract void setChargeEndAndDuration(long endChargingAt);
 
@@ -58,12 +61,13 @@ public abstract class EvRequestLifecycle {
                 ", arrivalTimeInternal=" + arrivalTimeInternal +
                 ", socArrival=" + socArrival +
                 ", hubId='" + hubId + '\'' +
+                ", requestedChargerType='" + requestedChargerType + '\'' +
                 ", foundQueue=" + foundQueue +
                 ", enteredQueue=" + enteredQueue +
                 ", abandonedQueue=" + abandonedQueue +
                 ", maxQueueTimeAccepted=" + maxQueueTimeAccepted +
                 ", chargerId='" + chargerId + '\'' +
-                ", plugType='" + plugType + '\'' +
+                ", assignedChargerType='" + assignedChargerType + '\'' +
                 ", startChargingInternal=" + startChargingInternal +
                 ", waitTimeBeforeCharging=" + waitTimeBeforeCharging +
                 ", chargeDuration=" + chargeDuration +
@@ -72,6 +76,8 @@ public abstract class EvRequestLifecycle {
                 ", arrivalTimeFormatted='" + arrivalTimeFormatted + '\'' +
                 ", startChargingFormatted='" + startChargingFormatted + '\'' +
                 ", endChargingFormatted='" + endChargingFormatted + '\'' +
+                ", waitTimeHourFormatted='" + waitTimeHourFormatted + '\'' +
+                ", chargeDurationHourFormatted='" + chargeDurationHourFormatted + '\'' +
                 '}';
     }
 }

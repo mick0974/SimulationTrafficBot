@@ -67,7 +67,7 @@ public class ChargingModelService {
     }
 
     public List<Pair<Long, Double>> computeChargingTable(double vehicleCapacityKwh, double maxVehiclePowerKw,
-                                                         double infrastructurePowerKw, double startSoc, double targetSoc, long startTime) {
+                                                         double infrastructurePowerKw, double startSoc, double targetSoc, long startTimeSeconds) {
 
         log.info("Calculating charging table for request: ");
         log.info("Vehicle capacity kwh: {}", vehicleCapacityKwh);
@@ -101,7 +101,7 @@ public class ChargingModelService {
             pKw = Math.round(pKw * 100.0) / 100.0;
             if (chargingTable.isEmpty() || Double.compare(chargingTable.getLast().getValue(), pKw) != 0)
                 chargingTable.add(new Pair<>(
-                        startTime + ((long) totalTimeSecs),
+                        startTimeSeconds + ((long) totalTimeSecs),
                         pKw
                 ));
 
@@ -111,7 +111,7 @@ public class ChargingModelService {
 
         // Aggiungo un ultimo campionamento a 0 per concludere la ricarica
         chargingTable.add(new Pair<>(
-                startTime + ((long) totalTimeSecs),
+                startTimeSeconds + ((long) totalTimeSecs),
                 0.0
         ));
 

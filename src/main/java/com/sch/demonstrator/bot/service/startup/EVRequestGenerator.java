@@ -39,12 +39,12 @@ public class EVRequestGenerator implements EVRequestInitializer {
     private final CsvMapper mapper = new CsvMapper();
 
     @Override
-    public List<BackgroundEVRequest> generateRequests(String[] hubIds) {
-
+    public List<BackgroundEVRequest> generateRequests(Map<String, Map<String, Double>> hubData) {
         log.info("=== Start generating EV requests ===");
 
         List<EVModel> evModels = loadVehicleDataset();
         Map<String, Map<Integer, Integer>> arrivals = loadArrivalPerHub();
+        String[] hubIds = hubData.keySet().toArray(new String[0]);
 
         Map<Integer, Integer> totalPerHour = computeTotalRequestsPerHour(arrivals);
         log.debug("Mean requests per hour: {}", totalPerHour);
@@ -75,8 +75,6 @@ public class EVRequestGenerator implements EVRequestInitializer {
                 currentTime += generateDeltaTime(lambdaPerSecond);
                 if (currentTime >= endTime) break;
 
-                EVModel evModel = evModels.get(random.nextInt(evModels.size()));
-
                 // Determino a che hub assegnare la richiesta
                 String hubId;
                 Map<String, Double> probs = hubDistribution.get(currentHour);
@@ -87,6 +85,12 @@ public class EVRequestGenerator implements EVRequestInitializer {
                     hubId = hubIds[random.nextInt(hubIds.length)];
                 }
 
+                EVModel evModel = evModels.get(random.nextInt(evModels.size()));
+                String requestedChargerType = selectChargerType(evModel, hubData.get(hubId).keySet());
+                log.debug("Requested charger type: {}", requestedChargerType);
+                log.debug("hub stats: {}", hubData.get(hubId));
+                double expectedChargerPower = hubData.get(hubId).get(requestedChargerType);
+
                 // Computo la gaussiana per campionare la soc iniziale
                 Pair<Double, Double> params = gaussianParams.get(hubId).get(currentHour);
 
@@ -94,20 +98,21 @@ public class EVRequestGenerator implements EVRequestInitializer {
                         params.getFirst(),
                         params.getSecond());
 
-                double socOrigin = Math.max(0.05, socInitDist.sample());
+                double socOrigin = round(Math.max(0.05, socInitDist.sample()));
 
                 double socTarget;
                 do {
-                    socTarget = socTargetDist.sample();
+                    socTarget = round(socTargetDist.sample());
                 } while (socTarget <= socOrigin);
 
                 BackgroundEVRequest request = BackgroundEVRequest.builder()
-                        .id(UUID.randomUUID())
+                        .requestId(UUID.randomUUID())
                         .vehicleCapacityKwh(evModel.batteryCapacityKWh())
                         .maxVehiclePowerKw(evModel.fastChargingPowerKwDc())
                         .startSoc(round(socOrigin))
                         .targetSoc(round(socTarget))
-                        .chargerType(selectChargerType(evModel))
+                        .chargerType(requestedChargerType)
+                        .expectedChargerPower(expectedChargerPower)
                         .startTimeSeconds(currentTime)
                         .hubId(hubId)
                         .hour(currentHour)
@@ -182,8 +187,14 @@ public class EVRequestGenerator implements EVRequestInitializer {
         return (int) Math.max(1, -Math.log(1 - u) / lambdaPerSecond);
     }
 
-    private String selectChargerType(EVModel model) {
-        if (model.fastChargePort() == null) return "AC";
+    private String selectChargerType(EVModel model, Set<String> hubChargerType) {
+        log.debug("Selecting charger type between {} for model plug {}", hubChargerType, model.fastChargePort());
+        if (hubChargerType.isEmpty()
+                || model.fastChargePort() == null
+                || model.fastChargePort().isEmpty()
+                || !hubChargerType.contains(model.fastChargePort()))
+            return "AC";
+
         return random.nextBoolean() ? "AC" : model.fastChargePort();
     }
 

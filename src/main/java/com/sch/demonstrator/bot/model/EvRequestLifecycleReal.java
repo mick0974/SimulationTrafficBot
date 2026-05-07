@@ -15,13 +15,9 @@ public class EvRequestLifecycleReal extends EvRequestLifecycle {
     private long startChargingReal;
     private long endChargingReal;
 
-    public EvRequestLifecycleReal(String requestType,
-                                  UUID requestId,
-                                  long arrivalTimeInternal,
-                                  double socArrival,
-                                  String hubId) {
-
-        super(requestType, requestId, arrivalTimeInternal, socArrival, hubId);
+    public EvRequestLifecycleReal(String requestType, UUID requestId, long arrivalTimeInternal,
+                                  double socArrival, String hubId, String requestedChargerType) {
+        super(requestType, requestId, arrivalTimeInternal, socArrival, hubId, requestedChargerType);
         this.arrivalTimeReal = Instant.now().getEpochSecond();
     }
 
@@ -45,9 +41,9 @@ public class EvRequestLifecycleReal extends EvRequestLifecycle {
     }
 
     @Override
-    public void setChargerData(String chargerId, String plugType) {
+    public void setChargerData(String chargerId, String assignedChargerType) {
         super.setChargerId(chargerId);
-        super.setPlugType(plugType);
+        super.setAssignedChargerType(assignedChargerType);
     }
 
     @Override
@@ -58,6 +54,7 @@ public class EvRequestLifecycleReal extends EvRequestLifecycle {
         super.setWaitTimeBeforeCharging(waitTime);
         super.setStartChargingInternal(super.getArrivalTimeInternal() + waitTime);
         super.setStartChargingFormatted(Utils.formatTime(super.getStartChargingInternal()));
+        super.setWaitTimeHourFormatted(Utils.formatTime(waitTime));
     }
 
     @Override
@@ -68,5 +65,6 @@ public class EvRequestLifecycleReal extends EvRequestLifecycle {
         super.setChargeDuration(duration);
         super.setEndChargingInternal(super.getStartChargingInternal() + duration);
         super.setEndChargingFormatted(Utils.formatTime(super.getEndChargingInternal()));
+        super.setChargeDurationHourFormatted(Utils.formatTime(duration));
     }
 }

@@ -12,6 +12,7 @@ import com.sch.demonstrator.bot.model.Charger;
 import com.sch.demonstrator.bot.model.EVRequest;
 import com.sch.demonstrator.bot.service.exception.AdasRequestNotAssignedException;
 import com.sch.demonstrator.bot.service.processing.ChargingModelService;
+import com.sch.demonstrator.bot.service.processing.DriverBehaviorService;
 import com.sch.demonstrator.bot.service.processing.HubManagementService;
 import com.sch.demonstrator.bot.service.processing.QueueManager;
 import com.sch.demonstrator.bot.service.startup.EVRequestInitializer;
@@ -31,10 +32,7 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.util.List;
-import java.util.Map;
-import java.util.Queue;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
@@ -58,6 +56,7 @@ public class ChargingManager {
     private final DateTimeFormatter formatter = DateTimeFormatter
             .ofPattern("yyyy-MM-dd HH:mm:ss")
             .withZone(ZoneId.systemDefault());
+    private final DriverBehaviorService driverBehaviorService;
 
     private volatile Instant startTime;
     private long botTimeShift;
@@ -70,7 +69,7 @@ public class ChargingManager {
             RequestTracker tracker,
             @Qualifier("taskScheduler") TaskScheduler taskScheduler,
             ApplicationEventPublisher eventPublisher,
-            BotProperties props) {
+            BotProperties props, DriverBehaviorService driverBehaviorService) {
 
         this.evRequestInitializer = evRequestInitializer;
         this.hubManagementService = hubManagementService;
@@ -80,12 +79,13 @@ public class ChargingManager {
         this.taskScheduler = taskScheduler;
         this.eventPublisher = eventPublisher;
         this.props = props;
+        this.driverBehaviorService = driverBehaviorService;
     }
 
     @PostConstruct
     private void init() {
-        String[] hubIds = hubManagementService.getHubIds();
-        evRequests.addAll(evRequestInitializer.generateRequests(hubIds));
+        Map<String, Map<String, Double>> hubStats = hubManagementService.getHubStats();
+        evRequests.addAll(evRequestInitializer.generateRequests(hubStats));
         startTime = props.getStartTimeReal();
         botTimeShift = props.getStartTimeInternal();
     }
@@ -93,9 +93,9 @@ public class ChargingManager {
     // ----------------------------- ADAS REQUESTS HANDLING ----------------------------------------
     public void processAdasRequest(AdasEVRequest request) {
         tracker.start(
-                "Adas", request.getId(),
+                "Adas", request.getRequestId(),
                 Instant.now().getEpochSecond() - startTime.getEpochSecond(),
-                request.getStartSoc(), request.getHubId(), RequestTracker.TrackingType.REAL);
+                request.getStartSoc(), request.getHubId(), request.getChargerType(), RequestTracker.TrackingType.REAL);
 
         processEVRequest(request);
     }
@@ -152,7 +152,8 @@ public class ChargingManager {
     @EventListener(AssignChargerEvent.class)
     protected void chargeBackgroundVehicle(AssignChargerEvent event) {
         BackgroundEVRequest request = event.requestToSatisfy();
-        tracker.start("Background", request.getId(), request.getStartTimeSeconds(), request.getStartSoc(), request.getHubId(), RequestTracker.TrackingType.REAL);
+        tracker.start("Background", request.getRequestId(), request.getStartTimeSeconds(), request.getStartSoc(),
+                request.getHubId(), request.getChargerType(), RequestTracker.TrackingType.REAL);
         processEVRequest(request);
     }
 
@@ -164,7 +165,7 @@ public class ChargingManager {
     }
 
     private void scheduleRequest(BackgroundEVRequest request) {
-        log.info("[{}] Scheduling request", request.getId());
+        log.info("[{}] Scheduling request", request.getRequestId());
         Instant now = startTime;
         Instant triggerAt = now.plusSeconds(request.getStartTimeSeconds()).minusSeconds(botTimeShift);
         taskScheduler.schedule(() -> eventPublisher.publishEvent(new AssignChargerEvent(request)), triggerAt);
@@ -175,7 +176,7 @@ public class ChargingManager {
 
     private void processEVRequest(EVRequest request) {
         String logId = request.getLogId();
-        UUID requestId = request.getId();
+        UUID requestId = request.getRequestId();
         String hubId = request.getHubId();
         log.info("[{}] Received request from vehicle", logId);
 
@@ -183,12 +184,13 @@ public class ChargingManager {
 
         log.info("[{}] Start processing request, charger allocation in progress", logId);
         Charger charger = allocateChargerToRequest(
+                request.getRequestType(),
                 request.getHubId(),
                 request.getChargerType(),
                 request.getMaxVehiclePowerKw());
 
-        // Aggiorno se la richiesta ha incontrato coda
-        tracker.foundQueue(requestId, charger != null);
+        // Aggiorno se la richiesta ha incontrato coda (non può essere soddisfatta immediatamente)
+        tracker.foundQueue(requestId, charger == null);
 
         if (charger != null) {
             log.info("[{}] Request assigned to charger {}", logId, charger);
@@ -210,12 +212,12 @@ public class ChargingManager {
     }
 
     private void onChargerAssigned(EVRequest request, Charger charger) {
-        tracker.setCharger(request.getId(), charger.getChargerId(), charger.getType());
+        tracker.setCharger(request.getRequestId(), charger.getChargerId(), charger.getType());
 
         if (request instanceof BackgroundEVRequest bgRequest) {
             scheduleChargingProcess(bgRequest, charger);
         } else {
-            adasAssignedChargers.put(request.getId(), charger);
+            adasAssignedChargers.put(request.getRequestId(), charger);
         }
     }
 
@@ -223,56 +225,87 @@ public class ChargingManager {
         queueManager.dryQueue(hubId, this::onChargerAssigned);
     }
 
-    private Charger allocateChargerToRequest(String hubId, String chargerType, double maxVehiclePowerKw) {
-        return hubManagementService.assignCharger(hubId, chargerType, maxVehiclePowerKw);
+    private Charger allocateChargerToRequest(String requestType, String hubId, String chargerType, double maxVehiclePowerKw) {
+        if (requestType.equalsIgnoreCase("Adas"))
+            return hubManagementService.assignChargerAdas(hubId, chargerType, maxVehiclePowerKw);
+        else
+            return hubManagementService.assignChargerBackground(hubId, chargerType, maxVehiclePowerKw);
     }
 
-    private void scheduleChargingProcess(BackgroundEVRequest request, Charger allocatedCharger) {
+    private void scheduleChargingProcess(BackgroundEVRequest request, Charger charger) {
         Instant now = Instant.now();
-        log.info("[{}] Generating charging table at {}", request.getId(), formatter.format(now));
+        log.info("[{}] Generating charging table at {}", request.getRequestId(), formatter.format(now));
 
-        List<Pair<Instant, Double>> chargingTable = chargingModelService.computeChargingTable(
+        List<Pair<Long, Double>> chargingTable = chargingModelService.computeChargingTable(
                 request.getVehicleCapacityKwh(),
                 request.getMaxVehiclePowerKw(),
-                allocatedCharger.getInfrastructurePowerKw(),
+                charger.getInfrastructurePowerKw(),
                 request.getStartSoc(),
                 request.getTargetSoc(),
-                now);
+                now.getEpochSecond());
 
         if (chargingTable.isEmpty()) {
-            log.warn("[{}] Request is invalid, skipping", request.getId());
+            log.warn("[{}] Request is invalid, skipping", request.getRequestId());
             return;
         }
 
-        log.debug("[{}] Start charging at {}, end charging at {}, total time seconds {}",
-                request.getId(),
-                formatter.format(chargingTable.getFirst().getKey()),
-                formatter.format(chargingTable.getLast().getKey()),
-                chargingTable.getLast().getKey().getEpochSecond() - chargingTable.getFirst().getKey().getEpochSecond());
+        if (assignedChargerIsDegraded(request.getChargerType(), charger.getType())) {
+            chargingTable = updateChargingTable(chargingTable, request, charger);
+        }
 
-        log.info("[{}] Start scheduling power usage update", request.getId());
-        for (Pair<Instant, Double> pair : chargingTable) {
-            log.info("[{}] Scheduling power usage {} at {}", request.getId(), pair.getValue(), formatter.format(pair.getKey()));
+        log.debug("[{}] Start charging at {} (real time), end charging at {} (real time), total charge time {} seconds ({} min)",
+                request.getRequestId(),
+                formatter.format(now.plusSeconds(chargingTable.getFirst().getKey())),
+                formatter.format(now.plusSeconds(chargingTable.getLast().getKey())),
+                chargingTable.getLast().getKey() - chargingTable.getFirst().getKey(),
+                (chargingTable.getLast().getKey() - chargingTable.getFirst().getKey()) / 60.0
+        );
+
+        log.info("[{}] Start scheduling power usage update", request.getRequestId());
+        for (Pair<Long, Double> pair : chargingTable) {
+            Instant scheduleAt = now.plusSeconds(pair.getKey());
+            log.info("[{}] Scheduling power usage {} at {}", request.getRequestId(), pair.getValue(), formatter.format(scheduleAt));
             taskScheduler.schedule(() ->
                             eventPublisher.publishEvent(
-                                    new ChargingProgressEvent(allocatedCharger.getHubId(), allocatedCharger.getChargerId(), pair.getValue())),
-                    pair.getKey());
+                                    new ChargingProgressEvent(charger.getHubId(), charger.getChargerId(), pair.getValue())),
+                    scheduleAt);
         }
 
         // Aggiorno il tracking della richiesta
-        tracker.startCharging(request.getId(), chargingTable.getFirst().getKey().getEpochSecond());
-        tracker.endCharging(request.getId(), chargingTable.getLast().getKey().getEpochSecond());
-        tracker.endTracking(request.getId());
+        tracker.startCharging(request.getRequestId(), chargingTable.getFirst().getKey());
+        tracker.endCharging(request.getRequestId(), chargingTable.getLast().getKey());
+        tracker.endTracking(request.getRequestId());
 
         // Ritarda la liberazione del connettore di 5 secondi dopo l'ultima erogazione
         taskScheduler.schedule(() ->
                         eventPublisher.publishEvent(new ChargingEndedEvent(
-                                allocatedCharger.getHubId(), allocatedCharger.getChargerId())),
-                chargingTable.getLast().getKey().plusSeconds(1));
+                                charger.getHubId(), charger.getChargerId())),
+                now.plusSeconds(chargingTable.getLast().getKey() + 5));
         log.debug("[{}] Scheduling ChargingEndedEvent event for hub {} at {}",
-                request.getId(),
-                allocatedCharger.getHubId(), formatter.format(chargingTable.getLast().getKey().plusSeconds(5)));
+                request.getRequestId(),
+                charger.getHubId(), formatter.format(now.plusSeconds(chargingTable.getLast().getKey() + 5)));
 
-        log.info("[{}] Charging events scheduled successfully", request.getId());
+        log.info("[{}] Charging events scheduled successfully", request.getRequestId());
+    }
+
+    private boolean assignedChargerIsDegraded(String chargerRequested, String chargerAssigned) {
+        return !chargerRequested.equals("AC") && chargerAssigned.equals("AC");
+    }
+
+    private List<Pair<Long, Double>> updateChargingTable(List<Pair<Long, Double>> chargingTable,
+            BackgroundEVRequest request, Charger allocatedCharger) {
+
+        long startTime = chargingTable.getFirst().getFirst();
+        long maxAcceptedChargeTime =
+                driverBehaviorService.computeMaxChargingTimeWithDegradedCharger(
+                        request.getHour(),
+                        chargingTable.getLast().getFirst() - startTime,
+                        allocatedCharger.getInfrastructurePowerKw(),
+                        request.getExpectedChargerPower()
+                );
+
+        return chargingTable.stream()
+                .takeWhile(p -> (p.getFirst() - startTime) <= maxAcceptedChargeTime)
+                .toList();
     }
 }

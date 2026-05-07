@@ -15,6 +15,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 @Component
 @Slf4j
@@ -25,7 +26,7 @@ public class EVRequestReader implements EVRequestInitializer {
     private final BotProperties props;
 
     @Override
-    public List<BackgroundEVRequest> generateRequests(String[] hubIds) {
+    public List<BackgroundEVRequest> generateRequests(Map<String, Map<String, Double>> hubs) {
         log.info("=== Start uploading EV requests ===");
 
         CsvMapper mapper = new CsvMapper();

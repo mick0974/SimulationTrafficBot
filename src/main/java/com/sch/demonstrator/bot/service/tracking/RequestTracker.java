@@ -29,11 +29,13 @@ public class RequestTracker {
     public enum TrackingType {REAL, SIMULATED}
 
     private static final String CSV_HEADER =
-            "request_type,request_id,hub_id,soc_arrival,arrival_time_internal," +
+            "request_type,request_id,hub_id,soc_arrival,arrival_time_internal,requested_plug_type," +
                     "found_queue,entered_queue,abandoned_queue,max_queue_time_accepted," +
-                    "charger_id,plug_type," +
+                    "charger_id,assigned_plug_type," +
                     "start_charging_internal,wait_time_before_charging,charge_duration,end_charging_internal," +
-                    "arrival_time_formatted,abandoned_queue_at_formatted,start_charging_formatted,end_charging_formatted";
+                    "ended_charging_earlier," +
+                    "arrival_time_formatted,abandoned_queue_at_formatted,start_charging_formatted,end_charging_formatted," +
+                    "wait_time_hour_formatted,charge_duration_hour_formatted";
 
     private final BotProperties props;
     private final Map<UUID, EvRequestLifecycle> tracked = new ConcurrentHashMap<>();
@@ -42,12 +44,12 @@ public class RequestTracker {
         return (EvRequestLifecycleSimulated) tracked.get(requestId);
     }
 
-    public void start(String type, UUID id, long arrivalTime, double soc, String hubId, TrackingType trackingType) {
+    public void start(String type, UUID id, long arrivalTime, double soc, String hubId, String requestedChargerType, TrackingType trackingType) {
         tracked.computeIfAbsent(id, k -> {
             if (trackingType.equals(TrackingType.REAL))
-                return new EvRequestLifecycleReal(type, id, arrivalTime, soc, hubId);
+                return new EvRequestLifecycleReal(type, id, arrivalTime, soc, hubId, requestedChargerType);
             else
-                return new EvRequestLifecycleSimulated(type, id, arrivalTime, soc, hubId);
+                return new EvRequestLifecycleSimulated(type, id, arrivalTime, soc, hubId, requestedChargerType);
         });
     }
 
@@ -119,6 +121,7 @@ public class RequestTracker {
                 safe(r.getHubId()),
                 safe(String.valueOf(r.getSocArrival())),
                 safe(String.valueOf(r.getArrivalTimeInternal())),
+                safe(r.getRequestedChargerType()),
 
                 safe(String.valueOf(r.getFoundQueue())),
                 safe(String.valueOf(r.getEnteredQueue())),
@@ -126,17 +129,23 @@ public class RequestTracker {
                 safe(String.valueOf(r.getMaxQueueTimeAccepted())),
 
                 safe(r.getChargerId()),
-                safe(r.getPlugType()),
+                safe(r.getAssignedChargerType()),
 
                 safe(String.valueOf(r.getStartChargingInternal())),
                 safe(String.valueOf(r.getWaitTimeBeforeCharging())),
                 safe(String.valueOf(r.getChargeDuration())),
                 safe(String.valueOf(r.getEndChargingInternal())),
 
+                safe(r instanceof EvRequestLifecycleSimulated simulated
+                        ? String.valueOf(simulated.getEndedChargingEarlier())
+                        : ""),
+
                 safe(r.getArrivalTimeFormatted()),
                 safe(r.getAbandonedQueueAtFormatted()),
                 safe(r.getStartChargingFormatted()),
-                safe(r.getEndChargingFormatted())
+                safe(r.getEndChargingFormatted()),
+                safe(r.getWaitTimeHourFormatted()),
+                safe(r.getChargeDurationHourFormatted())
         );
     }
 

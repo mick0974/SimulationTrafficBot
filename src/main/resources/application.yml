@@ -8,18 +8,18 @@ server:
 request:
   # Valori: "generation", "upload"
   mode: "generation"
-  generation:
-    start-hour: 18
-    end-hour: 20
+  generation: # [0, 23]
+    start-hour: 0
+    end-hour: 23
     generated-request-output: "./results/generated_requests.csv"
 
-    # Distribuzione gaussiana per SOC post-ricarica
+    # Distribuzione gaussiana per SOC target ricarica
     soc:
       target:
         mean: 0.65
         std-dev: 0.10
   upload:
-    input: "/home/michele/IdeaProjects/bot/src/main/resources/csv/test/debug_requests1.csv"
+    input: "./results/generated_requests.csv"
   execution-output: "./results/request_processing.csv"
   websocket:
     publish-interval-seconds: 45

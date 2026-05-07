@@ -8,7 +8,7 @@ import com.sch.demonstrator.bot.model.Charger;
 import com.sch.demonstrator.bot.model.EvRequestLifecycleSimulated;
 import com.sch.demonstrator.bot.service.processing.ChargingModelService;
 import com.sch.demonstrator.bot.service.processing.HubManagementService;
-import com.sch.demonstrator.bot.service.processing.QueueBehaviorService;
+import com.sch.demonstrator.bot.service.processing.DriverBehaviorService;
 import com.sch.demonstrator.bot.service.startup.EVRequestInitializer;
 import com.sch.demonstrator.bot.service.tracking.RequestTracker;
 import com.sch.demonstrator.bot.util.Utils;
@@ -33,9 +33,9 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 @RequiredArgsConstructor
 public class ChargingManagerSimulated {
 
-    private final EVRequestInitializer evEVRequestInitializer;
+    private final EVRequestInitializer evRequestInitializer;
     private final HubManagementService hubManagementService;
-    private final QueueBehaviorService queueBehaviorService;
+    private final DriverBehaviorService driverBehaviorService;
     private final ChargingModelService chargingModelService;
     private final RequestTracker tracker;
     private final BotProperties props;
@@ -50,8 +50,8 @@ public class ChargingManagerSimulated {
 
     @PostConstruct
     private void init() {
-        String[] hubIds = hubManagementService.getHubIds();
-        evRequests.addAll(evEVRequestInitializer.generateRequests(hubIds));
+        Map<String, Map<String, Double>> hubStats = hubManagementService.getHubStats();
+        evRequests.addAll(evRequestInitializer.generateRequests(hubStats));
         startTimeReal = props.getStartTimeReal();
         startTimeInternal = props.getStartTimeInternal();
     }
@@ -70,16 +70,18 @@ public class ChargingManagerSimulated {
     }
 
     protected void chargeBackgroundVehicle(AssignChargerEvent event) {
-        log.info("[{}] Received ResolveRequestEvent event: {}", event.requestToSatisfy().getId(), event);
+        log.info("[{}] Received ResolveRequestEvent event: {}", event.requestToSatisfy().getRequestId(), event);
         BackgroundEVRequest request = event.requestToSatisfy();
-        UUID requestId = request.getId();
+        UUID requestId = request.getRequestId();
         long arrivalTime = request.getStartTimeSeconds();
         String hubId = request.getHubId();
+        String requestedChargerType = request.getChargerType();
         double soc = request.getStartSoc();
 
-        log.info("[{}] Start processing event, charger allocation in progress", event.requestToSatisfy().getId());
+        log.info("[{}] Start processing event, charger allocation in progress", event.requestToSatisfy().getRequestId());
 
-        tracker.start("Background", requestId, arrivalTime, soc, hubId, RequestTracker.TrackingType.SIMULATED);
+        tracker.start("Background", requestId, arrivalTime, soc, hubId,
+                requestedChargerType, RequestTracker.TrackingType.SIMULATED);
         trackedRequests
                 .computeIfAbsent(hubId, k -> new ArrayList<>())
                 .add(tracker.getTrackedRequest(requestId));
@@ -107,7 +109,7 @@ public class ChargingManagerSimulated {
             if (foundQueue) {
                 int hubQueueSize = getHubQueueSize(hubId, arrivalTime);
                 log.info("[{}] Identified queue of {} requests for hub {}", requestId, hubQueueSize, hubId);
-                entersQueue = queueBehaviorService.joinQueue(
+                entersQueue = driverBehaviorService.joinQueue(
                         hubQueueSize,
                         soc,
                         arrivalTime
@@ -116,7 +118,7 @@ public class ChargingManagerSimulated {
                 log.info("[{}] Request enters in queue: {}", requestId, entersQueue);
                 // Se la richiesta entra in coda determino il tempo massimo di attesa e se abbandona la coda
                 if (entersQueue) {
-                    maxQueueWaitTime = queueBehaviorService.getMaxQueueingTime(soc, arrivalTime);
+                    maxQueueWaitTime = driverBehaviorService.getMaxQueueingTime(soc, arrivalTime);
                     abandonQueue = (arrivalTime + maxQueueWaitTime) < earliestCompleted.getEndChargingInternal();
                 }
 
@@ -150,14 +152,14 @@ public class ChargingManagerSimulated {
     }
 
     private Charger allocateChargerToRequest(String hubId, String chargerType, double maxVehiclePowerKw) {
-        return hubManagementService.assignCharger(hubId, chargerType, maxVehiclePowerKw);
+        return hubManagementService.assignChargerBackground(hubId, chargerType, maxVehiclePowerKw);
     }
 
     private void executeChargingProcess(BackgroundEVRequest request, Charger charger, long delayInQueue) {
-        log.info("[{}] Generating charging table at {} with delayed time {}", request.getId(), request.getStartTimeSeconds() + delayInQueue, delayInQueue);
+        log.info("[{}] Generating charging table at {} with delayed time {}", request.getRequestId(), request.getStartTimeSeconds() + delayInQueue, delayInQueue);
 
-        UUID requestId = request.getId();
-        tracker.setCharger(request.getId(), charger.getChargerId(), charger.getType());
+        UUID requestId = request.getRequestId();
+        tracker.setCharger(request.getRequestId(), charger.getChargerId(), charger.getType());
 
         List<Pair<Long, Double>> chargingTable = chargingModelService.computeChargingTable(
                 request.getVehicleCapacityKwh(),
@@ -168,15 +170,19 @@ public class ChargingManagerSimulated {
                 request.getStartTimeSeconds() + delayInQueue);
 
         if (chargingTable.isEmpty()) {
-            log.warn("[{}] Request is invalid, skipping", request.getId());
+            log.warn("[{}] Charging table not generated, skipping request", request.getRequestId());
             return;
         }
 
-        log.info("[{}] Start scheduling power usage update: {}", request.getId(), chargingTable);
+        if (assignedChargerIsDegraded(request.getChargerType(), charger.getType())) {
+            chargingTable = updateChargingTable(chargingTable, request, charger);
+        }
+
+        log.info("[{}] Start scheduling power usage update: {}", request.getRequestId(), chargingTable);
 
         tracker.startCharging(requestId, chargingTable.getFirst().getKey());
         tracker.endCharging(requestId, chargingTable.getLast().getKey());
-        tracker.endTracking(request.getId());
+        tracker.endTracking(request.getRequestId());
     }
 
     private int getHubQueueSize(String hubId, long requestArrivalTime) {
@@ -226,6 +232,27 @@ public class ChargingManagerSimulated {
             log.info("[{}] Removed request [{}]: {} ", hubId, request.getRequestId(), request);
 
         trackedRequests.getOrDefault(hubId, new ArrayList<>()).remove(request);
+    }
+
+    private boolean assignedChargerIsDegraded(String chargerRequested, String chargerAssigned) {
+        return !chargerRequested.equals("AC") && chargerAssigned.equals("AC");
+    }
+
+    private List<Pair<Long, Double>> updateChargingTable(List<Pair<Long, Double>> chargingTable,
+                                                         BackgroundEVRequest request, Charger allocatedCharger) {
+
+        long startTime = chargingTable.getFirst().getFirst();
+        long maxAcceptedChargeTime =
+                driverBehaviorService.computeMaxChargingTimeWithDegradedCharger(
+                        request.getHour(),
+                        chargingTable.getLast().getFirst() - startTime,
+                        allocatedCharger.getInfrastructurePowerKw(),
+                        request.getExpectedChargerPower()
+                );
+
+        return chargingTable.stream()
+                .takeWhile(p -> (p.getFirst() - startTime) <= maxAcceptedChargeTime)
+                .toList();
     }
 
 }

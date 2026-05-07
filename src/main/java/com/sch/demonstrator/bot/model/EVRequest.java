@@ -17,7 +17,7 @@ import java.util.UUID;
 @SuperBuilder
 @ToString
 public abstract class EVRequest {
-    private UUID id;
+    private UUID requestId;
     private double startSoc;
     private long startTimeSeconds;
     private String chargerType;
@@ -27,6 +27,6 @@ public abstract class EVRequest {
     public abstract String getRequestType();
 
     public String getLogId() {
-        return "%s - %s".formatted(getRequestType(), id);
+        return "%s - %s".formatted(getRequestType(), requestId);
     }
 }
