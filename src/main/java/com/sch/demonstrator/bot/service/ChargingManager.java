@@ -242,7 +242,7 @@ public class ChargingManager {
                 charger.getInfrastructurePowerKw(),
                 request.getStartSoc(),
                 request.getTargetSoc(),
-                now.getEpochSecond());
+                0);
 
         if (chargingTable.isEmpty()) {
             log.warn("[{}] Request is invalid, skipping", request.getRequestId());
